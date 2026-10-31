@@ -1,0 +1,40 @@
+#!/bin/sh
+# ---------------------------------------------------------------
+# First-boot defaults for Nokia XG-040G-MD
+#   1) enable software + hardware flow offloading (replaces TurboACC)
+#   2) enable BBR congestion control (kmod-tcp-bbr is built in)
+# Offloading is skipped when SQM/QoS is enabled, they conflict.
+# ---------------------------------------------------------------
+
+[ -f /etc/config/firewall ] || exit 0
+
+sqm_enabled=0
+if [ -f /etc/config/sqm ] && uci -q show sqm 2>/dev/null | grep -q "enabled='1'"; then
+	sqm_enabled=1
+fi
+
+if [ "$sqm_enabled" = "0" ]; then
+	uci -q set firewall.@defaults[0].flow_offloading='1'
+	uci -q set firewall.@defaults[0].flow_offloading_hw='1'
+	uci -q commit firewall
+	logger -t turbo "flow offloading (sw+hw) enabled by default"
+fi
+
+# --- BBR + fq qdisc ---
+set_sysctl() {
+	key="$1"
+	val="$2"
+	if grep -q "^${key}=" /etc/sysctl.conf 2>/dev/null; then
+		sed -i "s|^${key}=.*|${key}=${val}|" /etc/sysctl.conf
+	else
+		echo "${key}=${val}" >> /etc/sysctl.conf
+	fi
+	sysctl -w "${key}=${val}" >/dev/null 2>&1
+}
+
+set_sysctl net.core.default_qdisc fq
+set_sysctl net.ipv4.tcp_congestion_control bbr
+
+logger -t turbo "BBR congestion control enabled by default"
+
+exit 0
