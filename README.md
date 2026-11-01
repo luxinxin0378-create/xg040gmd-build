@@ -1,18 +1,20 @@
-# AN7581 固件编译工程：XG-040G-MD + HG5382A（Lean lede）
+# AN7581 固件编译工程：XG-040G-MD + HG5382A + XG-040G-TF（Lean lede）
 
-同一个仓库编译 **两台** Airoha AN7581DT 设备的自定义固件，源码基于
+同一个仓库编译 **三台** Airoha AN7581DT 设备的自定义固件，源码基于
 [coolsnowwolf/lede](https://github.com/coolsnowwolf/lede)（master 分支，内核 6.18，LuCI 取自 openwrt-25.12）。
 
-| | 机型 A | 机型 B |
-|---|---|---|
-| 设备名（lede） | `nokia_xg-040g-md-ubi` | `fiberhome_hg5382a` |
-| 厂商 | Nokia Bell（移动定制） | FiberHome 烽火 HG5382A |
-| 配置文件 | `configs/xg040g-md.config` | `configs/hg5382a.config` |
-| 工作流 | `Build LEDE for Nokia XG-040G-MD` | `Build LEDE for FiberHome HG5382A` |
-| Release tag | `build-<N>` | `hg5382a-build-<N>` |
+| | 机型 A | 机型 B | 机型 C |
+|---|---|---|---|
+| 设备名（lede） | `nokia_xg-040g-md-ubi` | `fiberhome_hg5382a` | `nokia_xg-040g-tf-ubi` |
+| 厂商 | Nokia Bell（移动定制） | FiberHome 烽火 HG5382A | Nokia Bell（电信定制） |
+| 配置文件 | `configs/xg040g-md.config` | `configs/hg5382a.config` | `configs/xg040g-tf.config` |
+| 工作流 | `Build LEDE for Nokia XG-040G-MD` | `Build LEDE for FiberHome HG5382A` | `Build LEDE for Nokia XG-040G-TF` |
+| Release tag | `build-<N>` | `hg5382a-build-<N>` | `xg040g-tf-build-<N>` |
 
-**两份 config 的插件列表完全一致**（同平台同内核），只有目标机型那 3 行不同。
-改插件时如果想保持两机型一致，记得两边 config 都改。
+**三份 config 的插件列表完全一致**（同平台同内核），只有目标机型那 3 行不同。
+改插件时如果想保持机型之间一致，记得几份 config 都改。
+
+> 三条工作流的 `on.push.paths` 各自只监听自己的 config + 自己的 yml，互不干扰。
 
 ---
 
@@ -61,6 +63,29 @@
 
 > UBI 布局意味着 **同样要求已刷好 OpenWrt U-Boot**，原厂 stock 布局刷不进去，这一点与 Nokia 款一致。
 
+### 机型 C：Nokia XG-040G-TF（电信版）
+
+与机型 A **同一套 `nokia_xg-040g-md-common` 设备定义**（DEVICE_VENDOR/_DEVICE_MODEL 不同，其余同源），
+同样位于 `airoha/an7581` target，产物名 `openwrt-airoha-an7581-nokia_xg-040g-tf-ubi-squashfs-sysupgrade.itb`。
+
+⚠️ **但 lede 在 TF 的定义里主动减掉了三个包**（相对 MD 的 common）：
+
+| 被减掉的包 | 含义 |
+|---|---|
+| `-kmod-usb3` | **电信版很可能没有可用的 USB3 口** |
+| `-kmod-usb-ledtrig-usbport` | 无 USB LED 触发 |
+| `-kmod-regulator-userspace-consumer` | 无用户空间调压接口 |
+
+这意味着三份统一插件里的 **USB 段落（QModem 4G/5G 拨号、USB 网卡驱动、USB 存储）在 TF 上大概率找不到对应硬件**，
+只会白白占用固件体积。
+
+为了「三机型插件一致」当前仍然全部编入了。若你确认手上这台 TF **确实没有 USB 口**，
+把 `configs/xg040g-tf.config` 里「USB 移动网络模块」和「USB 存储支持」两段注释掉，
+固件能小几十 MB，256MB NAND 上会宽松不少（见第三节关于 rootfs ≤180MB 的说明）。
+
+其余部分与机型 A 完全相同：同为 UBI 布局（`-ubi` 后缀），同样要求先刷 OpenWrt U-Boot，
+光模块同样是 `kmod-airoha-en7572` + `kmod-phy-airoha-en8811h`。
+
 ---
 
 ## 二、两种编译方式
@@ -71,11 +96,13 @@
 
 ```
 xg040gmd-build/
-├── .github/workflows/build-xg040g-md.yml   # 云编译工作流（Nokia）
+├── .github/workflows/build-xg040g-md.yml   # 云编译工作流（Nokia MD，移动版）
 ├── .github/workflows/build-hg5382a.yml     # 云编译工作流（FiberHome）
-├── configs/xg040g-md.config                # 机型 + 插件选择（Nokia）
+├── .github/workflows/build-xg040g-tf.yml   # 云编译工作流（Nokia TF，电信版）
+├── configs/xg040g-md.config                # 机型 + 插件选择（Nokia MD）
 ├── configs/hg5382a.config                  # 机型 + 插件选择（FiberHome）
-├── files/etc/uci-defaults/99-turbo-offload # 首启自动开 flow offloading + BBR（两机型共用）
+├── configs/xg040g-tf.config                # 机型 + 插件选择（Nokia TF）
+├── files/etc/uci-defaults/99-turbo-offload # 首启自动开 flow offloading + BBR（三机型共用）
 ├── scripts/local-build.sh                  # 本机 WSL 编译脚本
 ├── 插件清单.md
 └── README.md
@@ -101,8 +128,9 @@ xg040gmd-build/
 
 仓库 → **Actions** → 左侧选对应机型的工作流 → 右侧 **Run workflow** → 选 `main` → 运行。
 
-- Nokia：`Build LEDE for Nokia XG-040G-MD` → Artifact `lede-xg040g-md-<编号>` → Release `build-<N>`
+- Nokia MD：`Build LEDE for Nokia XG-040G-MD` → Artifact `lede-xg040g-md-<编号>` → Release `build-<N>`
 - FiberHome：`Build LEDE for FiberHome HG5382A` → Artifact `lede-hg5382a-<编号>` → Release `hg5382a-build-<N>`
+- Nokia TF：`Build LEDE for Nokia XG-040G-TF` → Artifact `lede-xg040g-tf-<编号>` → Release `xg040g-tf-build-<N>`
 
 工作流会依次：清理磁盘 → 装依赖 → clone lede → 挂 QModem feed → 注入 files/ → 校验机型 → 校验插件 →
 `make download` → 编译 → 打包。
@@ -115,8 +143,9 @@ xg040gmd-build/
 
 约 1~2 小时后，在该次运行的页面底部 **Artifacts** 下载 `lede-xg040g-md-<编号>`，解压得到：
 
-- `openwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb` ← 主固件（Nokia）
+- `openwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb` ← 主固件（Nokia MD）
   - FiberHome 对应的是 `openwrt-airoha-an7581-fiberhome_hg5382a-squashfs-sysupgrade.itb`
+  - TF 电信版对应的是 `openwrt-airoha-an7581-nokia_xg-040g-tf-ubi-squashfs-sysupgrade.itb`
 - `*-recovery.itb`（如产出，UART/initramfs 救砖用）
 - `SHA256SUMS.txt`
 
