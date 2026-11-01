@@ -1,11 +1,24 @@
-# Nokia XG-040G-MD 固件编译工程（Lean lede）
+# AN7581 固件编译工程：XG-040G-MD + HG5382A（Lean lede）
 
-面向 **诺基亚贝尔 XG-040G-MD** 光猫 / 路由一体机的自定义固件编译工程，源码基于
+同一个仓库编译 **两台** Airoha AN7581DT 设备的自定义固件，源码基于
 [coolsnowwolf/lede](https://github.com/coolsnowwolf/lede)（master 分支，内核 6.18，LuCI 取自 openwrt-25.12）。
+
+| | 机型 A | 机型 B |
+|---|---|---|
+| 设备名（lede） | `nokia_xg-040g-md-ubi` | `fiberhome_hg5382a` |
+| 厂商 | Nokia Bell（移动定制） | FiberHome 烽火 HG5382A |
+| 配置文件 | `configs/xg040g-md.config` | `configs/hg5382a.config` |
+| 工作流 | `Build LEDE for Nokia XG-040G-MD` | `Build LEDE for FiberHome HG5382A` |
+| Release tag | `build-<N>` | `hg5382a-build-<N>` |
+
+**两份 config 的插件列表完全一致**（同平台同内核），只有目标机型那 3 行不同。
+改插件时如果想保持两机型一致，记得两边 config 都改。
 
 ---
 
 ## 一、硬件与支持情况
+
+### 机型 A：Nokia XG-040G-MD
 
 | 项目 | 参数 |
 |---|---|
@@ -24,6 +37,30 @@
 也就是说：**该镜像要求设备已经刷入 OpenWrt U-Boot（或 tcboot）**。
 如果你现在还停留在原厂 u-boot + stock 布局，这个镜像刷不进去 —— 那种情况请改用官方 OpenWrt 源码编译 stock 布局版本。
 
+### 机型 B：FiberHome HG5382A（烽火）
+
+与机型 A **同为 `airoha/an7581` target**，共用内核和工具链，因此上面的插件可以原样复用。
+
+| 项目 | 参数 |
+|---|---|
+| SoC | Airoha AN7581DT（与 Nokia 款同款） |
+| lede 设备名 | `fiberhome_hg5382a`，target `airoha/an7581` |
+| 2.5G 电口 | 外挂 **MaxLinear GPY211** PHY（`kmod-phy-maxlinear`，由设备定义自动带入） |
+| 光口 | XPON，走 `kmod-airoha-xpon` + `kmod-airoha-paged-bosa`（BOSA 光组件，本机专用） |
+| PON 管理 | `airoha-ponctl` / `airoha-pond` / `luci-app-pon`（自动带入） |
+| 闪存布局 | UBI（`UBOOTENV_IN_UBI=1`、`KERNEL_IN_UBI=1`，走 `fiberhome-ubi-images`） |
+| 产物文件名 | `openwrt-airoha-an7581-fiberhome_hg5382a-squashfs-sysupgrade.itb` |
+
+关键差异对比 Nokia 款：
+
+| 差异点 | Nokia XG-040G-MD | FiberHome HG5382A |
+|---|---|---|
+| 光模块驱动 | `kmod-airoha-en7572` | `kmod-airoha-paged-bosa` |
+| 2.5G PHY | EN8811HN（内置） | MaxLinear GPY211（外挂） |
+| 设备名后缀 | 带 `-ubi`（选项里有 `-ubi` / 非 ubi 两个 profile） | 无后缀变体，只有 `fiberhome_hg5382a` |
+
+> UBI 布局意味着 **同样要求已刷好 OpenWrt U-Boot**，原厂 stock 布局刷不进去，这一点与 Nokia 款一致。
+
 ---
 
 ## 二、两种编译方式
@@ -34,9 +71,11 @@
 
 ```
 xg040gmd-build/
-├── .github/workflows/build-xg040g-md.yml   # 云编译工作流
-├── configs/xg040g-md.config                # 机型 + 插件选择
-├── files/etc/uci-defaults/99-turbo-offload # 首启自动开 flow offloading + BBR
+├── .github/workflows/build-xg040g-md.yml   # 云编译工作流（Nokia）
+├── .github/workflows/build-hg5382a.yml     # 云编译工作流（FiberHome）
+├── configs/xg040g-md.config                # 机型 + 插件选择（Nokia）
+├── configs/hg5382a.config                  # 机型 + 插件选择（FiberHome）
+├── files/etc/uci-defaults/99-turbo-offload # 首启自动开 flow offloading + BBR（两机型共用）
 ├── scripts/local-build.sh                  # 本机 WSL 编译脚本
 ├── 插件清单.md
 └── README.md
@@ -60,15 +99,24 @@ xg040gmd-build/
 
 **A-2. 触发编译**
 
-仓库 → **Actions** → 左侧 `Build LEDE for Nokia XG-040G-MD` → 右侧 **Run workflow** → 选 `main` → 运行。
+仓库 → **Actions** → 左侧选对应机型的工作流 → 右侧 **Run workflow** → 选 `main` → 运行。
+
+- Nokia：`Build LEDE for Nokia XG-040G-MD` → Artifact `lede-xg040g-md-<编号>` → Release `build-<N>`
+- FiberHome：`Build LEDE for FiberHome HG5382A` → Artifact `lede-hg5382a-<编号>` → Release `hg5382a-build-<N>`
+
 工作流会依次：清理磁盘 → 装依赖 → clone lede → 挂 QModem feed → 注入 files/ → 校验机型 → 校验插件 →
 `make download` → 编译 → 打包。
+
+> **两条工作流互不干扰**：各自的 `on.push.paths` 只监听自己的 config 和自己的 yml，
+> 所以改动 Nokia 的插件不会触发 FiberHome 重编译，反之亦然。
+> （例外：改某个 workflow 文件本身会触发它自己，此时可在 Actions 页手动 Cancel。）
 
 **A-3. 取固件**
 
 约 1~2 小时后，在该次运行的页面底部 **Artifacts** 下载 `lede-xg040g-md-<编号>`，解压得到：
 
-- `openwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb` ← 主固件
+- `openwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb` ← 主固件（Nokia）
+  - FiberHome 对应的是 `openwrt-airoha-an7581-fiberhome_hg5382a-squashfs-sysupgrade.itb`
 - `*-recovery.itb`（如产出，UART/initramfs 救砖用）
 - `SHA256SUMS.txt`
 
@@ -98,7 +146,8 @@ bash scripts/local-build.sh
 
 ## 三、当前已内置的插件
 
-想改插件就编辑 `configs/xg040g-md.config`，增删 `CONFIG_PACKAGE_xxx=y` 即可。
+想改插件就编辑对应的 `configs/*.config`，增删 `CONFIG_PACKAGE_xxx=y` 即可。
+两个机型当前插件完全一致，想保持同步就两边都改同样的行。
 
 | 分类 | 插件 |
 |---|---|
@@ -168,6 +217,36 @@ lede 默认把 qmodem 那行注释掉了，构建脚本会自动追加：
 
 刷完不通电/不进系统：接 TTL 看 U-Boot 是否起来 → 起得来就 TFTP/ymodem 重刷；起不来用 MTK/Airoha 工具进 BROM 恢复。
 
+> 以上是 Nokia XG-040G-MD 的流程。**HG5382A 的流程不同**，见下面 4.1。
+
+### 4.1 HG5382A（烽火）刷机要点
+
+HG5382A 是 XGPON 光猫，原厂系统自带 telnet 后门，不需要 TTL 就能拿到 shell：
+
+```sh
+# 原厂后台开 telnet 后（设备背面贴纸有 MAC，取最后 6 位，字母大写）
+telnet 192.168.1.1
+# 用户名: telnetadmin
+# 密码:   FH-nE7jA%5m<MAC后6位>
+# 提权:   su   →   密码 Fh@<MAC后6位>
+```
+
+（这组凭据来自恩山论坛 HG5382A 帖子，不同批次/固件版本可能有差异，失效时请自行搜索最新贴。）
+
+**务必先做三件事：**
+
+1. **备份全部分区**。原厂 `cat /proc/mtd` 大致为 `boot` / `bootflag` / `KernelA`/`RootfsA` / `KernelB`/`RootfsB` /
+   `apps` / `frameworka` / `frameworkb` / `factory` / `userlocalct` / `userdata`，逐个 gzip 备份出来；
+2. **备份原厂光模块校准数据**。丢校准会导致发光功率异常、温度偏高、OLT 注册困难，
+   这是 HG5382A 刷机最容易踩且最不可逆的坑；
+3. 本固件是 **UBI 布局**，同样要求先刷好 OpenWrt U-Boot / tcboot。
+
+**已知兼容性坑（论坛反馈）：**
+
+- 部分 **中兴 ZTEG OLT** 在 O5 之后会把光猫踢掉，注册状态在 O3/O5 之间反复横跳。
+  解法：LuCI → 网络 → 配置 → OMCI Set → ONU identity，把硬件版本改成 `VX.0`、软件版本改成 `VX.X.X`，保存重启；
+- PON 注册不上时先看 `luci-app-pon`（固件已内置）里的光模块信息窗；无线的校准/驅動状态还需自行确认。
+
 ---
 
 ## 五、常见问题
@@ -177,7 +256,7 @@ lede 默认把 qmodem 那行注释掉了，构建脚本会自动追加：
 | `OpenWrt can only be built on a case-sensitive filesystem` | 工程在 NTFS/9p 上，移到 WSL ext4 |
 | 编译中途被 kill（signal 9） | 内存不足，调大 WSL2 内存或降 `-j` 并发 |
 | `make download` 大量 404 / 超时 | 国内网络问题，配代理后重试；已下载的不会重复下 |
-| Actions 失败在 `应用配置` | 设备符号未命中，看该步输出的 `grep -i nokia` 结果 |
+| Actions 失败在 `应用配置` | 设备符号未命中，看该步输出的 `grep -iE "nokia\|fiberhome"` 结果 |
 | 插件列表里 MISS 一堆 | feed 未更新或包名不同（如 `luci-app-samba` vs `luci-app-samba4`），不影响编译，注意别漏装需要的功能 |
 | 想要 TurboACC 那个界面 | 已移除（25.12 分支无此插件）。加速改用防火墙 flow offloading + BBR，效果等价 |
 | 硬件分载勾了不生效 | `dmesg | grep -i ppe` 看 Airoha PPE 是否加载；flow offloading 与 SQM/QoS、mwan3 有冲突，需二选一 |
