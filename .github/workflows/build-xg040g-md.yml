@@ -19,6 +19,8 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 350
+    permissions:
+      contents: write
 
     steps:
       - name: 检出仓库
@@ -137,6 +139,17 @@ jobs:
           name: lede-xg040g-md-${{ github.run_number }}
           path: out/*
           retention-days: 30
+
+      - name: 发布到 Release（公开可下载）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: XG-040G-MD 固件 build-${{ github.run_number }}
+          body: |
+            Nokia XG-040G-MD (Airoha AN7581DT) — Lean LEDE
+            分支: ${{ github.ref_name }} / 提交: ${{ github.sha }}
+          files: out/*
+          fail_on_unmatched_files: true
 
       - name: 失败时上传日志
         if: failure()
