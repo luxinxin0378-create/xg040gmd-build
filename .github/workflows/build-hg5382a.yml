@@ -1,0 +1,161 @@
+name: Build LEDE for FiberHome HG5382A
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'configs/hg5382a.config'
+      - '.github/workflows/build-hg5382a.yml'
+
+env:
+  REPO_URL: https://github.com/coolsnowwolf/lede
+  REPO_BRANCH: master
+  CONFIG_FILE: configs/hg5382a.config
+  DEVICE_SYMBOL: CONFIG_TARGET_airoha_an7581_DEVICE_fiberhome_hg5382a
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 清理磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -a -f || true
+          df -h /
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man intltool \
+            libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev \
+            libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool llvm lrzsz libnsl-dev ninja-build p7zip \
+            p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils \
+            rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim \
+            wget xmlto xxd xz-utils zlib1g-dev
+
+      - name: 拉取 lede 源码
+        run: git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" lede
+
+      - name: 启用 QModem feed 并更新 feeds
+        run: |
+          cd lede
+          # QModem（4G/5G 模组管理）不在 lede 默认 feeds 里，需手动挂上
+          grep -q "src-git qmodem" feeds.conf.default || \
+            echo "src-git qmodem https://github.com/FUjr/QModem.git" >> feeds.conf.default
+          cat feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: 注入默认配置（flow offloading / BBR）
+        run: |
+          mkdir -p lede/files
+          cp -rv "$GITHUB_WORKSPACE/files/." lede/files/
+          chmod +x lede/files/etc/uci-defaults/*
+          ls -l lede/files/etc/uci-defaults/
+
+      - name: 缓存 dl 源码包
+        uses: actions/cache@v4
+        with:
+          # 精确到本 config；restore-keys 的 dl- 前缀可命中 XG-040G-MD 那条缓存
+          path: lede/dl
+          key: dl-${{ hashFiles('configs/hg5382a.config') }}
+          restore-keys: |
+            dl-
+
+      - name: 应用配置
+        run: |
+          cd lede
+          cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config
+          make defconfig
+          if ! grep -q "^$DEVICE_SYMBOL=y" .config; then
+            echo "::warning::设备符号未命中，尝试用 TARGET_PROFILE 兜底"
+            sed -i '/^CONFIG_TARGET_PROFILE=/d' .config
+            echo 'CONFIG_TARGET_PROFILE="DEVICE_fiberhome_hg5382a"' >> .config
+            make defconfig
+          fi
+          if ! grep -q "^$DEVICE_SYMBOL=y" .config; then
+            echo "::error::机型 fiberhome_hg5382a 未被选中，编译终止"
+            grep -iE "fiberhome|hg5382" .config || true
+            exit 1
+          fi
+          echo "机型校验通过"
+
+      - name: 校验插件是否全部命中
+        run: |
+          cd lede
+          miss=0
+          for p in $(grep -oP '^CONFIG_PACKAGE_\K[\w.+-]+(?==y)' "$GITHUB_WORKSPACE/$CONFIG_FILE"); do
+            if grep -q "^CONFIG_PACKAGE_$p=y" .config; then
+              echo "  OK   $p"
+            else
+              echo "  MISS $p"
+              miss=$((miss+1))
+            fi
+          done
+          echo "未命中插件数量: $miss （MISS 项通常代表该 feed 里没这个包名，不影响编译）"
+
+      - name: 下载依赖源码
+        run: |
+          cd lede
+          make download -j8 || make download -j1 V=s
+
+      - name: 编译固件
+        run: |
+          cd lede
+          if ! make -j$(nproc) V=s > build.log 2>&1; then
+            echo "::error::编译失败，最后 200 行日志："
+            tail -n 200 build.log
+            exit 1
+          fi
+          tail -n 30 build.log
+
+      - name: 整理产物
+        run: |
+          cd lede
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          find bin/targets/airoha -type f \( -name "*.itb" -o -name "*.bin" -o -name "*.fip" -o -name "sha256sums" \) \
+            -exec cp -v {} "$GITHUB_WORKSPACE/out/" \;
+          cd "$GITHUB_WORKSPACE/out"
+          sha256sum * > SHA256SUMS.txt || true
+          ls -lh
+          echo "---- 根分区占用（squashfs 建议 ≤180MB）----"
+          ls -lh "$GITHUB_WORKSPACE"/lede/bin/targets/airoha/an7581/*rootfs* 2>/dev/null || true
+
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: lede-hg5382a-${{ github.run_number }}
+          path: out/*
+          retention-days: 30
+
+      - name: 发布到 Release（公开可下载）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: hg5382a-build-${{ github.run_number }}
+          name: HG5382A 固件 hg5382a-build-${{ github.run_number }}
+          body: |
+            FiberHome HG5382A (Airoha AN7581DT) — Lean LEDE
+            分支: ${{ github.ref_name }} / 提交: ${{ github.sha }}
+          files: out/*
+          fail_on_unmatched_files: true
+
+      - name: 失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-hg5382a-${{ github.run_number }}
+          path: lede/build.log
+          retention-days: 7

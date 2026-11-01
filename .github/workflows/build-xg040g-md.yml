@@ -4,9 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
+    # 只监听本机型相关的文件，避免新增/修改其他机型的工作流时被连带触发
     paths:
-      - 'configs/**'
-      - '.github/workflows/**'
+      - 'configs/xg040g-md.config'
+      - '.github/workflows/build-xg040g-md.yml'
 
 env:
   REPO_URL: https://github.com/coolsnowwolf/lede
